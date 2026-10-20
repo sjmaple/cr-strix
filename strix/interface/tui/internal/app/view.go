@@ -549,7 +549,7 @@ func (m Model) sidebarView(width, height int) string {
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(dark).
 			Padding(0, 1).
-			Render(fixedPanelBody(m.targetsView(width-4), width-4, targetsHeight-2)))
+			Render(m.targetsView(width-4, targetsHeight-2)))
 	}
 	agents := ""
 	if agentHeight > 1 {
@@ -601,6 +601,13 @@ func (m Model) sidebarView(width, height int) string {
 }
 
 func (m Model) sidebarHeights() (statsHeight, vulnHeight, mcpHeight, agentHeight int) {
+	_, statsHeight, vulnHeight, mcpHeight, agentHeight = m.sidebarLayout()
+	return
+}
+
+// sidebarLayout sizes the targets box and the panels. The targets box only
+// takes rows no panel needs, so it never squeezes the panels below it.
+func (m Model) sidebarLayout() (targetsHeight, statsHeight, vulnHeight, mcpHeight, agentHeight int) {
 	// Measure the stats panel the way its box will render it: a long model name
 	// wraps inside the sidebar, and counting only its newlines would size the
 	// box short and push the whole frame past the bottom of the terminal.
@@ -620,7 +627,7 @@ func (m Model) sidebarHeights() (statsHeight, vulnHeight, mcpHeight, agentHeight
 		h     *int
 		floor int
 	}{{&statsHeight, 4}, {&mcpHeight, 5}, {&vulnHeight, 5}} {
-		over := m.sidebarTopHeight() + statsHeight + vulnHeight + mcpHeight + agentHeight - m.height
+		over := m.viewerHeight() + statsHeight + vulnHeight + mcpHeight + agentHeight - m.height
 		if over <= 0 {
 			break
 		}
@@ -629,14 +636,22 @@ func (m Model) sidebarHeights() (statsHeight, vulnHeight, mcpHeight, agentHeight
 		}
 	}
 	for _, h := range []*int{&mcpHeight, &vulnHeight, &statsHeight} {
-		if m.sidebarTopHeight()+statsHeight+vulnHeight+mcpHeight+agentHeight <= m.height {
+		if m.viewerHeight()+statsHeight+vulnHeight+mcpHeight+agentHeight <= m.height {
 			break
 		}
 		if *h > 1 {
 			*h = 1
 		}
 	}
-	spare := max(0, m.height-m.sidebarTopHeight()-statsHeight-vulnHeight-mcpHeight-agentHeight)
+	spare := max(0, m.height-m.viewerHeight()-statsHeight-vulnHeight-mcpHeight-agentHeight)
+	// The box needs its border and two rows: the header and a target or the
+	// count of hidden ones. A zoomed panel keeps the whole sidebar.
+	if targets := m.targetsView(m.sidebarInnerWidth(), maxTargetRows); targets != "" && m.zoomedPanel == panelNone {
+		if fit := min(lipgloss.Height(targets)+2, spare); fit >= 4 {
+			targetsHeight = fit
+			spare -= fit
+		}
+	}
 	switch {
 	case m.zoomedPanel == panelFindings && vulnHeight > 1:
 		vulnHeight += spare
@@ -658,17 +673,9 @@ func (m Model) sidebarTopHeight() int {
 	return m.viewerHeight() + m.targetsBoxHeight()
 }
 
-// targetsBoxHeight drops the box on terminals too short to also fit the agents
-// box, the stats box at its floor and squeezed findings and MCP headers.
 func (m Model) targetsBoxHeight() int {
-	if len(m.snapshot.Targets) == 0 {
-		return 0
-	}
-	room := m.height - m.viewerHeight() - 5 - 4 - 2
-	if room < 3 {
-		return 0
-	}
-	return min(lipgloss.Height(m.targetsView(m.sidebarInnerWidth()))+2, room)
+	targetsHeight, _, _, _, _ := m.sidebarLayout()
+	return targetsHeight
 }
 
 func (m Model) sidebarInnerWidth() int {
