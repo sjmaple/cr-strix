@@ -154,6 +154,21 @@ async def test_wrap_exec_command_leaves_an_exited_process_alone() -> None:
 
 
 @pytest.mark.asyncio
+async def test_wrap_exec_command_ignores_the_running_marker_inside_command_output() -> None:
+    exited = (
+        "Chunk ID: abc123\nWall time: 0.2 seconds\nProcess exited with code 0\nOutput:\n"
+        "Process running with session ID 7\nOutput:\n"
+    )
+    wrapped = factory._wrap_exec_command(_running_exec_tool(exited))
+
+    result = await wrapped.on_invoke_tool(
+        cast("Any", None), json.dumps({"cmd": "cat transcript.txt"})
+    )
+
+    assert result == exited
+
+
+@pytest.mark.asyncio
 async def test_responses_filesystem_custom_tool_output_is_bounded() -> None:
     async def invoke(_ctx: Any, _inp: str) -> str:
         return "line\n" * 50_000

@@ -464,8 +464,9 @@ _OUTPUT_HEADER_RE = re.compile(r"^Output:\n", re.MULTILINE)
 def _annotate_running_non_tty(parsed: dict[str, Any], result: Any) -> Any:
     if parsed.get("tty") or not isinstance(result, str):
         return result
-    match = _PROCESS_RUNNING_RE.search(result)
-    if match is None:
+    header = _OUTPUT_HEADER_RE.search(result)
+    head_end = len(result) if header is None else header.start()
+    if _PROCESS_RUNNING_RE.search(result, 0, head_end) is None:
         return result
     notice = _RUNNING_NON_TTY_NOTICE
     requested = parsed.get("yield_time_ms")
@@ -474,7 +475,6 @@ def _annotate_running_non_tty(parsed: dict[str, Any], result: Any) -> Any:
             f"Note: yield_time_ms={int(requested)} was capped at {PTY_YIELD_TIME_MS_MAX} "
             f"({_EXEC_YIELD_CAP_S} s). " + notice.removeprefix("Note: ")
         )
-    header = _OUTPUT_HEADER_RE.search(result, match.end())
     if header is None:
         return f"{result}\n{notice}"
     return f"{result[: header.end()]}{notice}\n{result[header.end() :]}"
