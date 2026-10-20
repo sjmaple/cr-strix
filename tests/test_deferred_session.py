@@ -243,6 +243,39 @@ async def test_extra_files_are_staged_inside_the_deferred_bring_up(backend: _Bac
 
 
 @pytest.mark.asyncio
+async def test_awaitable_extra_files_do_not_delay_the_backend_call(backend: _Backend) -> None:
+    scan_id = "deferred-extra-awaitable"
+    files: asyncio.Future[list[dict[str, Any]] | None] = asyncio.get_running_loop().create_future()
+    try:
+        bundle = await _create(scan_id, extra_files=files)
+        backend.gate.set()
+        await _settle()
+        assert backend.calls == 1
+        assert backend.session.writes == []
+        files.set_result([{"workspace_path": "/workspace/.strix/notes.md", "content": "hi"}])
+        await asyncio.wait_for(bundle["session"].resolve(), timeout=1)
+        assert len(backend.session.writes) == 1
+    finally:
+        await session_manager.cleanup(scan_id)
+
+
+@pytest.mark.asyncio
+async def test_awaitable_extra_files_resolving_to_none_stage_nothing(backend: _Backend) -> None:
+    scan_id = "deferred-extra-none"
+
+    async def _nothing() -> list[dict[str, Any]] | None:
+        return None
+
+    try:
+        bundle = await _create(scan_id, extra_files=_nothing())
+        backend.gate.set()
+        await asyncio.wait_for(bundle["session"].resolve(), timeout=1)
+        assert backend.session.writes == []
+    finally:
+        await session_manager.cleanup(scan_id)
+
+
+@pytest.mark.asyncio
 async def test_default_path_still_blocks_until_the_sandbox_is_up(backend: _Backend) -> None:
     scan_id = "deferred-off"
     backend.gate.set()

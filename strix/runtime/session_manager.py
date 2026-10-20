@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import io
 import logging
 import os
@@ -259,12 +260,20 @@ def _gitdir_from_pointer(git_file: Path) -> Path | None:
     return None
 
 
+async def _resolve_extra_file_archive(
+    extra_files: list[dict[str, Any]] | Awaitable[list[dict[str, Any]] | None] | None,
+    local_sources: list[dict[str, Any]],
+) -> bytes | None:
+    files = await extra_files if inspect.isawaitable(extra_files) else extra_files
+    return build_extra_file_archive(files, local_sources) if files else None
+
+
 async def create_or_reuse(
     scan_id: str,
     *,
     image: str,
     local_sources: list[dict[str, Any]],
-    extra_files: list[dict[str, Any]] | None = None,
+    extra_files: list[dict[str, Any]] | Awaitable[list[dict[str, Any]] | None] | None = None,
     status_sink: StatusSink | None = None,
     defer: bool = False,
 ) -> dict[str, Any]:
@@ -276,7 +285,9 @@ async def create_or_reuse(
     Each ``extra_files`` entry (``{"workspace_path": "/workspace/<rel>",
     "content": bytes | str}``) lands as a regular, agent-writable file at its
     ``workspace_path`` on every backend: the files are uploaded as one archive
-    and unpacked inside the sandbox right after bring-up.
+    and unpacked inside the sandbox right after bring-up. ``extra_files`` may
+    also be an awaitable resolving to that list: provisioning starts at once and
+    the files are awaited only when the sandbox is ready to receive them.
     """
 
     def report(phase: str) -> None:
@@ -297,9 +308,6 @@ async def create_or_reuse(
     else:
         bind_mounts = []
         entries = build_manifest_entries(local_sources)
-    extra_file_archive = (
-        build_extra_file_archive(extra_files, local_sources) if extra_files else None
-    )
 
     # Caido runs as an in-container sidecar; HTTP(S) traffic from any
     # process started via ``session.exec`` (the SDK's Shell tool, etc.)
@@ -339,13 +347,14 @@ async def create_or_reuse(
                 bind_mounts=bind_mounts,
             )
         )
-        if extra_file_archive is not None:
-            report("Placing workspace files")
-            try:
+        try:
+            extra_file_archive = await _resolve_extra_file_archive(extra_files, local_sources)
+            if extra_file_archive is not None:
+                report("Placing workspace files")
                 await stage_extra_files(session, extra_file_archive)
-            except BaseException:
-                await _discard_session(client, session)
-                raise
+        except BaseException:
+            await _discard_session(client, session)
+            raise
         return client, session
 
     async def _caido_url(session: Any) -> str:
