@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
 import logging
 import os
@@ -23,6 +24,8 @@ from strix.runtime.deferred_session import DeferredSandboxClient, DeferredSandbo
 
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable
+
     from agents.sandbox.session import BaseSandboxSession
 
     from strix.runtime.status import StatusSink
@@ -328,11 +331,13 @@ async def create_or_reuse(
 
     async def _bring_up() -> tuple[Any, Any]:
         report("Starting sandbox container")
-        client, session = await backend(
-            image=image,
-            manifest=manifest,
-            exposed_ports=(_CONTAINER_CAIDO_PORT,),
-            bind_mounts=bind_mounts,
+        client, session = await _create_or_discard(
+            backend(
+                image=image,
+                manifest=manifest,
+                exposed_ports=(_CONTAINER_CAIDO_PORT,),
+                bind_mounts=bind_mounts,
+            )
         )
         if extra_file_archive is not None:
             report("Placing workspace files")
@@ -343,13 +348,16 @@ async def create_or_reuse(
                 raise
         return client, session
 
-    async def _caido(session: Any) -> Any:
+    async def _caido_url(session: Any) -> str:
         report("Setting up the proxy")
         caido_endpoint = await session.resolve_exposed_port(_CONTAINER_CAIDO_PORT)
         scheme = "https" if caido_endpoint.tls else "http"
         host_caido_url = f"{scheme}://{caido_endpoint.host}:{caido_endpoint.port}"
         logger.debug("Caido host endpoint resolved: %s", host_caido_url)
-        return await bootstrap_caido(
+        return host_caido_url
+
+    def _caido(session: Any, host_caido_url: str) -> Any:
+        return bootstrap_caido(
             session,
             host_url=host_caido_url,
             container_url=container_caido_url,
@@ -364,7 +372,8 @@ async def create_or_reuse(
         )
 
         async def _caido_when_up() -> Any:
-            return await _caido(await deferred.resolve())
+            session = await deferred.resolve()
+            return await _caido(session, await _caido_url(session))
 
         bundle = {
             "client": DeferredSandboxClient(deferred),
@@ -378,8 +387,9 @@ async def create_or_reuse(
         return bundle
 
     client, session = await _bring_up()
+    host_caido_url = await _caido_url(session)
     caido_client = CaidoBootstrapHandle(
-        asyncio.create_task(_caido(session), name=f"caido-bootstrap-{scan_id}")
+        asyncio.create_task(_caido(session, host_caido_url), name=f"caido-bootstrap-{scan_id}")
     )
 
     bundle = {
@@ -390,6 +400,26 @@ async def create_or_reuse(
     _SESSION_CACHE[scan_id] = bundle
     logger.info("Sandbox session for scan %s ready and cached", scan_id)
     return bundle
+
+
+_DISCARD_TASKS: set[asyncio.Task[None]] = set()
+
+
+async def _create_or_discard(create: Awaitable[tuple[Any, Any]]) -> tuple[Any, Any]:
+    pending = asyncio.ensure_future(create)
+    try:
+        return await asyncio.shield(pending)
+    except asyncio.CancelledError:
+        discard = asyncio.create_task(_discard_when_created(pending))
+        _DISCARD_TASKS.add(discard)
+        discard.add_done_callback(_DISCARD_TASKS.discard)
+        raise
+
+
+async def _discard_when_created(create: asyncio.Future[tuple[Any, Any]]) -> None:
+    with contextlib.suppress(BaseException):
+        client, session = await create
+        await _discard_session(client, session)
 
 
 async def _discard_session(client: Any, session: Any) -> None:

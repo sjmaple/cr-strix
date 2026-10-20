@@ -129,6 +129,11 @@ def backend(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> 
     _BIND_MOUNT_BACKENDS.discard(name)
 
 
+async def _settle() -> None:
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+
 async def _create(scan_id: str, **kwargs: Any) -> dict[str, Any]:
     return await session_manager.create_or_reuse(
         scan_id, image="img", local_sources=[], defer=True, **kwargs
@@ -144,7 +149,7 @@ async def test_deferred_bundle_returns_before_the_backend_finishes(backend: _Bac
         assert isinstance(session, DeferredSandboxSession)
         assert isinstance(bundle["client"], DeferredSandboxClient)
         assert session.pending
-        await asyncio.sleep(0)
+        await _settle()
         assert backend.calls == 1
         assert await session.running()
         assert session.state.manifest.environment.value["PYTHONUNBUFFERED"] == "1"
@@ -205,6 +210,19 @@ async def test_cleanup_while_pending_cancels_the_bring_up(backend: _Backend) -> 
     assert session.bring_up.cancelled()
     assert backend.client.deleted == []
     assert session_manager._SESSION_CACHE.get(scan_id) is None
+    backend.gate.set()
+    await _settle()
+    assert backend.client.deleted == [backend.session]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_while_pending_ignores_a_failed_late_bring_up(backend: _Backend) -> None:
+    scan_id = "deferred-cancel-fail"
+    await _create(scan_id)
+    await asyncio.wait_for(session_manager.cleanup(scan_id), timeout=1)
+    backend.gate.set()
+    await _settle()
+    assert backend.client.deleted == []
 
 
 @pytest.mark.asyncio
