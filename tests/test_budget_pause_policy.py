@@ -21,7 +21,7 @@ from strix.core.sessions import open_agent_session
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable
+    from collections.abc import AsyncIterator, Awaitable, Callable
     from pathlib import Path
 
 
@@ -31,6 +31,7 @@ _CALL_LATENCY_S = 0.005
 
 class _FakeLedger:
     def __init__(self) -> None:
+        self.on_pause: Callable[[], Awaitable[None]] | None = None
         self.cost = 0.0
         self.calls: list[str] = []
         self.remaining: dict[str, int] = {}
@@ -80,6 +81,8 @@ class _FakeStream:
                 await self._hooks.on_llm_start(ctx_wrapper, self._agent, None, input_items)
             except BudgetPausedError as exc:
                 self.run_loop_exception = exc
+                if self._ledger.on_pause is not None:
+                    await self._ledger.on_pause()
                 return
             self._ledger.warned_inputs.append(input_items)
             if self._ledger.gate is not None:
@@ -582,6 +585,39 @@ async def test_operator_pause_holds_under_the_stop_policy(
             "root": "completed",
             "child-a": "completed",
             "child-b": "completed",
+        }
+        root_items = await scan.sessions[0].get_items()
+        assert any("keep going" in str(item) for item in root_items)
+
+    for session in scan.sessions:
+        session.close()
+
+
+@pytest.mark.asyncio
+async def test_a_resume_that_lands_before_the_park_still_continues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scan = _Scan(tmp_path, monkeypatch, max_budget_usd=None, budget_policy="stop")
+    resumed = 0
+
+    async def resume_at_once() -> None:
+        nonlocal resumed
+        resumed += 1
+        await scan.coordinator.resume_budget()
+
+    scan.ledger.on_pause = resume_at_once
+    with patch("strix.core.hooks.get_global_report_state", return_value=scan.ledger):
+        await scan.start_root(calls=6)
+        await scan.start_child("child-a", calls=6)
+        await _wait_until(lambda: scan.ledger.cost >= 2.0)
+        await scan.coordinator.pause_budget()
+        await asyncio.wait_for(asyncio.gather(*scan.tasks(), return_exceptions=True), timeout=5.0)
+        assert resumed >= 1
+        assert _pause_flags(scan.coordinator) == (False, False)
+        assert scan.ledger.cost == pytest.approx(12.0)
+        assert {aid: str(s) for aid, s in scan.coordinator.statuses.items()} == {
+            "root": "completed",
+            "child-a": "completed",
         }
 
     for session in scan.sessions:

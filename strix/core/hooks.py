@@ -65,9 +65,12 @@ class BudgetPausedError(RuntimeError):
     decided to park; the agent waits for a resume newer than that.
     """
 
-    def __init__(self, message: str, *, resume_epoch: int = 0) -> None:
+    def __init__(
+        self, message: str, *, resume_epoch: int = 0, operator_pause: bool = False
+    ) -> None:
         super().__init__(message)
         self.resume_epoch = resume_epoch
+        self.operator_pause = operator_pause
 
 
 def _validate_budget(max_budget_usd: float | None) -> None:
@@ -214,6 +217,7 @@ class ReportUsageHooks(RunHooks[dict[str, Any]]):
             raise BudgetPausedError(
                 "scan paused; waiting for the operator to resume",
                 resume_epoch=coordinator.resume_epoch,
+                operator_pause=True,
             )
 
     def _pause_if_limited(self, context: RunContextWrapper[dict[str, Any]]) -> None:
